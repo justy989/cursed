@@ -177,6 +177,11 @@ bool is_controller(Rune_t rune)
      return false;
 }
 
+void csi_reset(CSIEscape_t* csi)
+{
+     memset(csi, 0, sizeof(*csi));
+}
+
 void csi_parse(CSIEscape_t* csi)
 {
      char* str = csi->buffer;
@@ -191,7 +196,7 @@ void csi_parse(CSIEscape_t* csi)
      }
 
      csi->buffer[csi->buffer_length] = 0;
-     while(*str){
+     while(str < csi->buffer + csi->buffer_length){
           end = NULL;
           value = strtol(str, &end, 10);
 
@@ -200,14 +205,14 @@ void csi_parse(CSIEscape_t* csi)
 
           csi->argument[csi->argument_count] = value;
           csi->argument_count++;
+
           if(*str != ';' || csi->argument_count == ESCAPE_ARGUMENT_SIZE) break;
 
           str++;
      }
 
-     csi->mode[0] = *str;
-     str++;
-     csi->mode[1] = (str < csi->buffer + csi->buffer_length) ? *str : 0;
+     csi->mode[0] = *str++;
+     csi->mode[1] = (str < (csi->buffer + csi->buffer_length)) ? *str : 0;
 }
 
 void csi_handle(CSIEscape_t* csi)
@@ -355,9 +360,12 @@ void terminal_scroll_up(Terminal_t* terminal, int original, int n)
 
      CLAMP(n, 0, terminal->bottom - original + 1);
 
+     // clear the original line plus the scroll
      terminal_clear_region(terminal, 0, original, terminal->columns - 1, original + n - 1);
      terminal_set_dirt(terminal, original, terminal->bottom);
 
+     // swap lines to move them all up
+     // the cleared lines will end up at the bottom
      for(int i = original; i <= terminal->bottom - n; ++i){
           temp_line = terminal->lines[i];
           terminal->lines[i] = terminal->lines[i + n];
@@ -419,8 +427,7 @@ void terminal_control_code(Terminal_t* terminal, Rune_t rune)
      case '\a': // BEL
           break;
      case '\033': // ESC
-          // TODO
-          // csireset();
+          csi_reset(&terminal->csi_escape);
           terminal->escape_state &= ~(ESCAPE_STATE_CSI | ESCAPE_STATE_ALTCHARSET | ESCAPE_STATE_TEST);
           terminal->escape_state |= ESCAPE_STATE_START;
           return;
@@ -431,7 +438,7 @@ void terminal_control_code(Terminal_t* terminal, Rune_t rune)
      case '\032': // SUB
           terminal_set_glyph(terminal, '?', &terminal->cursor.attributes, terminal->cursor.x, terminal->cursor.y);
      case '\030':
-          // TODO: csireset()
+          csi_reset(&terminal->csi_escape);
           break;
      case '\005': // ENQ
      case '\000': // NULL
@@ -510,11 +517,13 @@ void terminal_put(Terminal_t* terminal, Rune_t rune)
                CSIEscape_t* csi = &terminal->csi_escape;
                csi->buffer[csi->buffer_length] = rune;
                csi->buffer_length++;
-               if(BETWEEN(rune, 0x40, 0x7E)){
+
+               if(BETWEEN(rune, 0x40, 0x7E) || csi->buffer_length >= (ESCAPE_BUFFER_SIZE - 1)){
                     terminal->escape_state = 0;
                     csi_parse(csi);
                     csi_handle(csi);
                }
+
                return;
           }else if(terminal->escape_state & ESCAPE_STATE_UTF8){
                // TODO
