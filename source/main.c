@@ -7,6 +7,7 @@
 #include <assert.h>
 #include <limits.h>
 #include <unistd.h>
+#include <ctype.h>
 #include <pthread.h>
 #include <signal.h>
 #include <pty.h>
@@ -501,6 +502,95 @@ void terminal_control_code(Terminal_t* terminal, Rune_t rune)
      terminal->escape_state &= ~(ESCAPE_STATE_STR_END | ESCAPE_STATE_STR);
 }
 
+bool esc_handle(Terminal_t* terminal, Rune_t rune)
+{
+     switch(rune) {
+     case '[':
+          terminal->escape_state |= ESCAPE_STATE_CSI;
+          return 0;
+     case '#':
+          terminal->escape_state |= ESCAPE_STATE_TEST;
+          return 0;
+     case '%':
+          terminal->escape_state |= ESCAPE_STATE_UTF8;
+          return 0;
+     case 'P': /* DCS -- Device Control String */
+     case '_': /* APC -- Application Program Command */
+     case '^': /* PM -- Privacy Message */
+     case ']': /* OSC -- Operating System Command */
+     case 'k': /* old title set compatibility */
+          // TODO
+          //tstrsequence(ascii);
+          return 0;
+     case 'n': /* LS2 -- Locking shift 2 */
+     case 'o': /* LS3 -- Locking shift 3 */
+          // TODO
+          //term.charset = 2 + (ascii - 'n');
+          break;
+     case '(': /* GZD4 -- set primary charset G0 */
+     case ')': /* G1D4 -- set secondary charset G1 */
+     case '*': /* G2D4 -- set tertiary charset G2 */
+     case '+': /* G3D4 -- set quaternary charset G3 */
+          // TODO
+          //term.icharset = ascii - '(';
+          //term.esc |= ESC_ALTCHARSET;
+          return 0;
+     case 'D': /* IND -- Linefeed */
+          if (terminal->cursor.y == terminal->bottom) {
+               terminal_scroll_up(terminal, terminal->top, 1);
+          } else {
+               terminal_move_cursor_to(terminal, terminal->cursor.x, terminal->cursor.y + 1);
+          }
+          break;
+     case 'E': /* NEL -- Next line */
+          terminal_put_newline(terminal, 1); /* always go to first col */
+          break;
+     case 'H': /* HTS -- Horizontal tab stop */
+          terminal->tabs[terminal->cursor.x] = 1;
+          break;
+     case 'M': /* RI -- Reverse index */
+          if (terminal->cursor.y == terminal->top) {
+               terminal_scroll_down(terminal, terminal->top, 1);
+          } else {
+               terminal_move_cursor_to(terminal, terminal->cursor.x, terminal->cursor.y - 1);
+          }
+          break;
+     case 'Z': /* DECID -- Identify Terminal */
+          // TODO
+          //ttywrite(vtiden, sizeof(vtiden) - 1);
+          break;
+     case 'c': /* RIS -- Reset to inital state */
+          // TODO
+          //treset();
+          //resettitle();
+          //xloadcols();
+          break;
+     case '=': /* DECPAM -- Application keypad */
+          terminal->mode |= TERMINAL_MODE_APPKEYPAD;
+          break;
+     case '>': /* DECPNM -- Normal keypad */
+          terminal->mode &= ~TERMINAL_MODE_APPKEYPAD;
+          break;
+     case '7': /* DECSC -- Save Cursor */
+          // TODO:
+          //tcursor(CURSOR_SAVE);
+          break;
+     case '8': /* DECRC -- Restore Cursor */
+          // TODO:
+          //tcursor(CURSOR_LOAD);
+          break;
+     case '\\': /* ST -- String Terminator */
+          // TODO:
+          //if(terminal->escape_mode & ESCAPE_STATE_STR_END) strhandle();
+          break;
+     default:
+          LOG("erresc: unknown sequence ESC 0x%02X '%c'\n", (unsigned char)rune, isprint(rune) ? rune : '.');
+          break;
+     }
+
+     return true;
+}
+
 void terminal_put(Terminal_t* terminal, Rune_t rune)
 {
      if(is_controller(rune)){
@@ -531,6 +621,8 @@ void terminal_put(Terminal_t* terminal, Rune_t rune)
                // TODO
           }else if(terminal->escape_state & ESCAPE_STATE_TEST){
                // TODO
+          }else{
+               if(!esc_handle(terminal, rune)) return;
           }
 
           terminal->escape_state = 0;
