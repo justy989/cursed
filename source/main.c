@@ -5,6 +5,7 @@
 #include <string.h>
 #include <errno.h>
 #include <assert.h>
+#include <limits.h>
 #include <unistd.h>
 #include <pthread.h>
 #include <signal.h>
@@ -19,6 +20,7 @@
 
 #define LOGFILE_NAME "cursed.log"
 #define DEFAULT_SHELL "/bin/bash"
+//NOTE: used for testing #define TERM_NAME "dumb"
 #define TERM_NAME "xterm"
 #define UTF8_SIZE 4
 #define ESCAPE_BUFFER_SIZE (128 * UTF8_SIZE)
@@ -118,6 +120,7 @@ typedef struct{
      char private;
      int argument[ESCAPE_ARGUMENT_SIZE];
      uint32_t argument_count;
+     char mode[2];
 }CSIEscape_t;
 
 typedef struct{
@@ -144,6 +147,7 @@ typedef struct{
      int32_t        selected_charset;
      bool           numlock;
      int32_t*       tabs;
+     CSIEscape_t    csi_escape;
 }Terminal_t;
 
 typedef struct{
@@ -171,6 +175,113 @@ bool is_controller(Rune_t rune)
      }
 
      return false;
+}
+
+void csi_parse(CSIEscape_t* csi)
+{
+     char* str = csi->buffer;
+     char* end = NULL;
+     long int value = 0;
+
+     csi->argument_count = 0;
+
+     if(*str == '?'){
+          csi->private = 1;
+          str++;
+     }
+
+     csi->buffer[csi->buffer_length] = 0;
+     while(*str){
+          end = NULL;
+          value = strtol(str, &end, 10);
+
+          if(end == str) value = 0;
+          else if(value == LONG_MAX || value == LONG_MIN) value = -1;
+
+          csi->argument[csi->argument_count] = value;
+          csi->argument_count++;
+          if(*str != ';' || csi->argument_count == ESCAPE_ARGUMENT_SIZE) break;
+
+          str++;
+     }
+
+     csi->mode[0] = *str;
+     str++;
+     csi->mode[1] = (str < csi->buffer + csi->buffer_length) ? *str : 0;
+}
+
+void csi_handle(CSIEscape_t* csi)
+{
+	switch (csi->mode[0]) {
+	default:
+          break;
+     case '@':
+          break;
+     case 'A':
+          break;
+     case 'B':
+     case 'e':
+          break;
+     case 'i':
+          break;
+     case 'c':
+          break;
+     case 'C':
+     case 'a':
+          break;
+     case 'D':
+          break;
+     case 'E':
+          break;
+     case 'F':
+          break;
+     case 'g':
+          break;
+     case 'G':
+     case '`':
+          break;
+     case 'H':
+     case 'f':
+          break;
+     case 'I':
+          break;
+     case 'J':
+          break;
+     case 'K':
+          break;
+     case 'S':
+          break;
+     case 'T':
+          break;
+     case 'L':
+          break;
+     case 'l':
+          break;
+     case 'M':
+          break;
+     case 'X':
+          break;
+     case 'P':
+          break;
+     case 'Z':
+          break;
+     case 'd':
+          break;
+     case 'h':
+          break;
+     case 'm':
+          break;
+     case 'n':
+          break;
+     case 'r':
+          break;
+     case 's':
+          break;
+     case 'u':
+          break;
+     case ' ':
+          break;
+     }
 }
 
 void terminal_move_cursor_to(Terminal_t* terminal, int x, int y)
@@ -245,7 +356,7 @@ void terminal_scroll_up(Terminal_t* terminal, int original, int n)
      CLAMP(n, 0, terminal->bottom - original + 1);
 
      terminal_clear_region(terminal, 0, original, terminal->columns - 1, original + n - 1);
-     terminal_set_dirt(terminal, original + n, terminal->bottom);
+     terminal_set_dirt(terminal, original, terminal->bottom);
 
      for(int i = original; i <= terminal->bottom - n; ++i){
           temp_line = terminal->lines[i];
@@ -260,13 +371,13 @@ void terminal_scroll_down(Terminal_t* terminal, int original, int n)
 
 	CLAMP(n, 0, terminal->bottom - original + 1);
 
-	terminal_clear_region(terminal, 0, original, terminal->columns - 1, original + n - 1);
-	terminal_set_dirt(terminal, original + n, terminal->bottom);
+	terminal_set_dirt(terminal, original, terminal->bottom - n);
+	terminal_clear_region(terminal, 0, terminal->bottom - n + 1, terminal->columns - 1, terminal->bottom);
 
-	for (int i = original; i <= terminal->bottom - n; i++) {
+	for (int i = terminal->bottom; i >= original + n; i--) {
 		temp_line = terminal->lines[i];
-		terminal->lines[i] = terminal->lines[i + n];
-		terminal->lines[i + n] = temp_line;
+		terminal->lines[i] = terminal->lines[i - n];
+          terminal->lines[i - n] = temp_line;
 	}
 }
 
@@ -390,6 +501,33 @@ void terminal_put(Terminal_t* terminal, Rune_t rune)
           return;
      }
 
+     if(terminal->escape_state & ESCAPE_STATE_STR){
+          return;
+     }
+
+     if(terminal->escape_state & ESCAPE_STATE_START){
+          if(terminal->escape_state & ESCAPE_STATE_CSI){
+               CSIEscape_t* csi = &terminal->csi_escape;
+               csi->buffer[csi->buffer_length] = rune;
+               csi->buffer_length++;
+               if(BETWEEN(rune, 0x40, 0x7E)){
+                    terminal->escape_state = 0;
+                    csi_parse(csi);
+                    csi_handle(csi);
+               }
+               return;
+          }else if(terminal->escape_state & ESCAPE_STATE_UTF8){
+               // TODO
+          }else if(terminal->escape_state & ESCAPE_STATE_ALTCHARSET){
+               // TODO
+          }else if(terminal->escape_state & ESCAPE_STATE_TEST){
+               // TODO
+          }
+
+          terminal->escape_state = 0;
+          return;
+     }
+
      terminal_set_glyph(terminal, rune, &terminal->cursor.attributes, terminal->cursor.x, terminal->cursor.y);
 
      int new_cursor = terminal->cursor.x + 1;
@@ -506,23 +644,44 @@ void* tty_read(void* data)
 void* tty_write_keys(void* data)
 {
      TTYWriteData_t* thread_data = (TTYWriteData_t*)(data);
+     int rc, key;
+     char character = 0;
+     char* string = NULL;
+     size_t len = 0;
+     bool free_string = false;
 
      while(true){
-          int key = getch();
+          key = getch();
+          string = keybound(key, 0);
+
+          if(!string){
+               character = key;
+               free_string = false;
+               string = (char*)(&character);
+               len = 1;
+          }else{
+               free_string = true;
+               len = strlen(string);
+          }
+
           switch(key){
           default:
-          {
-               int rc = write(thread_data->file_descriptor, &key, sizeof(key));
-               if(rc < 0){
-                    LOG("failed to write to tty descriptor: '%s'\n", strerror(errno));
-                    g_quit = true;
-               }
-          } break;
-          case 17: // ctrl + q
+               break;
+          case 17:
                g_quit = true;
                break;
           }
+
+          rc = write(thread_data->file_descriptor, string, len);
+          if(rc < 0){
+               printf("%s() write() to terminal failed: %s", __FUNCTION__, strerror(errno));
+               return NULL;
+          }
+
+          if(free_string) free(string);
      }
+
+     return NULL;
 }
 
 int main(int argc, char** argv)
@@ -546,7 +705,7 @@ int main(int argc, char** argv)
      {
           terminal.columns = 80;
           terminal.rows = 24;
-          terminal.bottom = terminal.columns - 1;
+          terminal.bottom = terminal.rows - 1;
 
           // allocate lines
           terminal.lines = calloc(terminal.rows, sizeof(*terminal.lines));
