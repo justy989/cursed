@@ -216,6 +216,8 @@ void csi_parse(CSIEscape_t* csi)
           csi->arguments[csi->argument_count] = value;
           csi->argument_count++;
 
+          str = end;
+
           if(*str != ';' || csi->argument_count == ESCAPE_ARGUMENT_SIZE) break;
 
           str++;
@@ -788,7 +790,6 @@ bool esc_handle(Terminal_t* terminal, Rune_t rune)
 void csi_handle(Terminal_t* terminal)
 {
      CSIEscape_t* csi = &terminal->csi_escape;
-     LOG("csi '%c'\n", csi->mode[0]);
 
 	switch (csi->mode[0]) {
 	default:
