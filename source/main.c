@@ -164,6 +164,8 @@ typedef struct{
 FILE* g_log = NULL;
 bool g_quit = false;
 
+Cursor_t g_cursor[2];
+
 bool is_controller(Rune_t rune)
 {
      // c0? idk what these mean
@@ -317,6 +319,22 @@ void terminal_scroll_down(Terminal_t* terminal, int original, int n)
 	}
 }
 
+void terminal_set_scroll(Terminal_t* terminal, int top, int bottom)
+{
+
+     CLAMP(top, 0, terminal->rows - 1);
+     CLAMP(bottom, 0, terminal->rows - 1);
+
+     if(top > bottom){
+          int temp = top;
+          top = bottom;
+          bottom = temp;
+     }
+
+     terminal->top = top;
+     terminal->bottom = bottom;
+}
+
 void terminal_insert_blank_line(Terminal_t* terminal, int n)
 {
      if(BETWEEN(terminal->cursor.y, terminal->top, terminal->bottom)){
@@ -333,12 +351,34 @@ void terminal_delete_line(Terminal_t* terminal, int n)
 
 void terminal_delete_char(Terminal_t* terminal, int n)
 {
+	int dst, src, size;
+	Glyph_t* line;
 
+	CLAMP(n, 0, terminal->columns - terminal->cursor.x);
+
+	dst = terminal->cursor.x;
+	src = terminal->cursor.x + n;
+	size = terminal->columns - src;
+	line = terminal->lines[terminal->cursor.y];
+
+	memmove(&line[dst], &line[src], size * sizeof(Glyph_t));
+	terminal_clear_region(terminal, terminal->columns - n, terminal->cursor.y, terminal->columns - 1, terminal->cursor.y);
 }
 
 void terminal_insert_blank(Terminal_t* terminal, int n)
 {
+	int dst, src, size;
+	Glyph_t* line;
 
+	CLAMP(n, 0, terminal->columns - terminal->cursor.x);
+
+	dst = terminal->cursor.x + n;
+	src = terminal->cursor.x;
+	size = terminal->columns - dst;
+	line = terminal->lines[terminal->cursor.y];
+
+	memmove(&line[dst], &line[src], size * sizeof(Glyph_t));
+	terminal_clear_region(terminal, src, terminal->cursor.y, dst - 1, terminal->cursor.y);
 }
 
 void terminal_put_newline(Terminal_t* terminal, bool first_column)
@@ -355,6 +395,42 @@ void terminal_put_newline(Terminal_t* terminal, bool first_column)
      terminal->dirty_lines[y] = true;
 }
 
+void terminal_put_tab(Terminal_t* terminal, int n)
+{
+     unsigned int new_x = terminal->cursor.x;
+
+     if(n > 0){
+          while(new_x < terminal->columns && n--){
+               new_x++;
+               while(new_x < terminal->columns && !terminal->tabs[new_x]){
+                    new_x++;
+               }
+          }
+     }else if(n < 0){
+          while(new_x > 0 && n++){
+               new_x--;
+               while(new_x > 0 && !terminal->tabs[new_x]){
+                    new_x--;
+               }
+          }
+     }
+
+     terminal->cursor.x = CLAMP(new_x, 0, terminal->columns - 1);
+}
+
+void terminal_cursor_save(Terminal_t* terminal)
+{
+	int alt = terminal->mode & TERMINAL_MODE_ALTSCREEN;
+     g_cursor[alt] = terminal->cursor;
+}
+
+void terminal_cursor_load(Terminal_t* terminal)
+{
+	int alt = terminal->mode & TERMINAL_MODE_ALTSCREEN;
+     terminal->cursor = g_cursor[alt];
+     terminal_move_cursor_to(terminal, g_cursor[alt].x, g_cursor[alt].y);
+}
+
 void terminal_control_code(Terminal_t* terminal, Rune_t rune)
 {
      assert(is_controller(rune));
@@ -363,7 +439,7 @@ void terminal_control_code(Terminal_t* terminal, Rune_t rune)
      default:
           break;
      case '\t': // HT
-          // TODO
+          terminal_put_tab(terminal, 1);
           return;
      case '\b': // BS
           terminal_move_cursor_to(terminal, terminal->cursor.x - 1, terminal->cursor.y);
@@ -622,7 +698,8 @@ void csi_handle(Terminal_t* terminal)
           terminal_move_cursor_to(terminal, csi->arguments[1] - 1, csi->arguments[0] - 1);
           break;
      case 'I':
-          // TODO
+          DEFAULT(csi->arguments[0], 1);
+          terminal_put_tab(terminal, csi->arguments[0]);
           break;
      case 'J': // clear region in relation to cursor
           switch(csi->arguments[0]){
@@ -685,22 +762,46 @@ void csi_handle(Terminal_t* terminal)
           break;
      case 'P':
           DEFAULT(csi->arguments[0], 1);
+          terminal_delete_char(terminal, csi->arguments[0]);
           break;
      case 'Z':
+          DEFAULT(csi->arguments[0], 1);
+          terminal_put_tab(terminal, -csi->arguments[0]);
           break;
      case 'd':
+          DEFAULT(csi->arguments[0], 1);
+          terminal_move_cursor_to(terminal, terminal->cursor.x, csi->arguments[0] - 1);
           break;
      case 'h':
+          // TODO
           break;
      case 'm':
+          // TODO
           break;
      case 'n':
+          // TODO
+#if 0
+          if(csi->arguments[0] == 6){
+               char buffer[BUFSIZ];
+               int len = snprintf(buffer, BUFSIZ, "\033[%i;%iR",
+                              terminal->cursor.x, terminal->cursor.y);
+               //ttywrite();
+          }
+#endif
           break;
      case 'r':
+          if(!csi->private){
+               DEFAULT(csi->arguments[0], 1);
+               DEFAULT(csi->arguments[1], terminal->rows);
+               terminal_set_scroll(terminal, csi->arguments[0] - 1, csi->arguments[1] - 1);
+               terminal_move_cursor_to(terminal, 0, 0);
+          }
           break;
      case 's':
+          terminal_cursor_save(terminal);
           break;
      case 'u':
+          terminal_cursor_load(terminal);
           break;
      case ' ':
           break;
