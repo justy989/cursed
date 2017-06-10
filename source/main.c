@@ -33,6 +33,7 @@
 #define ELEM_COUNT(static_array) (sizeof(static_array) / sizeof(static_array[0]))
 #define CLAMP(a, min, max) (a = (a < min) ? min : (a > max) ? max : a);
 #define BETWEEN(n, min, max) ((min <= n) && (n <= max))
+#define DEFAULT(a, value) (a = (a == 0) ? value : a)
 
 typedef uint_least32_t Rune_t;
 
@@ -119,7 +120,7 @@ typedef struct{
      char buffer[ESCAPE_BUFFER_SIZE];
      uint32_t buffer_length;
      char private;
-     int argument[ESCAPE_ARGUMENT_SIZE];
+     int arguments[ESCAPE_ARGUMENT_SIZE];
      uint32_t argument_count;
      char mode[2];
 }CSIEscape_t;
@@ -128,7 +129,7 @@ typedef struct{
      char type;
      char buffer[ESCAPE_BUFFER_SIZE];
      uint32_t buffer_length;
-     int argument[ESCAPE_ARGUMENT_SIZE];
+     int arguments[ESCAPE_ARGUMENT_SIZE];
      uint32_t argument_count;
 }STREscape_t;
 
@@ -204,7 +205,7 @@ void csi_parse(CSIEscape_t* csi)
           if(end == str) value = 0;
           else if(value == LONG_MAX || value == LONG_MIN) value = -1;
 
-          csi->argument[csi->argument_count] = value;
+          csi->arguments[csi->argument_count] = value;
           csi->argument_count++;
 
           if(*str != ';' || csi->argument_count == ESCAPE_ARGUMENT_SIZE) break;
@@ -214,80 +215,6 @@ void csi_parse(CSIEscape_t* csi)
 
      csi->mode[0] = *str++;
      csi->mode[1] = (str < (csi->buffer + csi->buffer_length)) ? *str : 0;
-}
-
-void csi_handle(CSIEscape_t* csi)
-{
-	switch (csi->mode[0]) {
-	default:
-          break;
-     case '@':
-          break;
-     case 'A':
-          break;
-     case 'B':
-     case 'e':
-          break;
-     case 'i':
-          break;
-     case 'c':
-          break;
-     case 'C':
-     case 'a':
-          break;
-     case 'D':
-          break;
-     case 'E':
-          break;
-     case 'F':
-          break;
-     case 'g':
-          break;
-     case 'G':
-     case '`':
-          break;
-     case 'H':
-     case 'f':
-          break;
-     case 'I':
-          break;
-     case 'J':
-          break;
-     case 'K':
-          break;
-     case 'S':
-          break;
-     case 'T':
-          break;
-     case 'L':
-          break;
-     case 'l':
-          break;
-     case 'M':
-          break;
-     case 'X':
-          break;
-     case 'P':
-          break;
-     case 'Z':
-          break;
-     case 'd':
-          break;
-     case 'h':
-          break;
-     case 'm':
-          break;
-     case 'n':
-          break;
-     case 'r':
-          break;
-     case 's':
-          break;
-     case 'u':
-          break;
-     case ' ':
-          break;
-     }
 }
 
 void terminal_move_cursor_to(Terminal_t* terminal, int x, int y)
@@ -388,6 +315,30 @@ void terminal_scroll_down(Terminal_t* terminal, int original, int n)
 		terminal->lines[i] = terminal->lines[i - n];
           terminal->lines[i - n] = temp_line;
 	}
+}
+
+void terminal_insert_blank_line(Terminal_t* terminal, int n)
+{
+     if(BETWEEN(terminal->cursor.y, terminal->top, terminal->bottom)){
+          terminal_scroll_down(terminal, terminal->cursor.y, n);
+     }
+}
+
+void terminal_delete_line(Terminal_t* terminal, int n)
+{
+     if(BETWEEN(terminal->cursor.y, terminal->top, terminal->bottom)){
+          terminal_scroll_up(terminal, terminal->cursor.y, n);
+     }
+}
+
+void terminal_delete_char(Terminal_t* terminal, int n)
+{
+
+}
+
+void terminal_insert_blank(Terminal_t* terminal, int n)
+{
+
 }
 
 void terminal_put_newline(Terminal_t* terminal, bool first_column)
@@ -591,6 +542,172 @@ bool esc_handle(Terminal_t* terminal, Rune_t rune)
      return true;
 }
 
+void csi_handle(Terminal_t* terminal)
+{
+     CSIEscape_t* csi = &terminal->csi_escape;
+
+	switch (csi->mode[0]) {
+	default:
+          break;
+     case '@':
+          // TODO
+          break;
+     case 'A':
+          DEFAULT(csi->arguments[0], 1);
+          terminal_move_cursor_to(terminal, terminal->cursor.x, terminal->cursor.y - csi->arguments[0]);
+          break;
+     case 'B':
+     case 'e':
+          DEFAULT(csi->arguments[0], 1);
+          terminal_move_cursor_to(terminal, terminal->cursor.x, terminal->cursor.y + csi->arguments[0]);
+          break;
+     case 'i':
+          // TODO
+          switch(csi->arguments[0]){
+          default:
+               break;
+          case 0:
+               break;
+          case 1:
+               break;
+          case 2:
+               break;
+          case 4:
+               break;
+          case 5:
+               break;
+          }
+          break;
+     case 'c':
+          // TODO
+          break;
+     case 'C':
+     case 'a':
+          DEFAULT(csi->arguments[0], 1);
+          terminal_move_cursor_to(terminal, terminal->cursor.x + csi->arguments[0], terminal->cursor.y);
+          break;
+     case 'D':
+          DEFAULT(csi->arguments[0], 1);
+          terminal_move_cursor_to(terminal, terminal->cursor.x - csi->arguments[0], terminal->cursor.y);
+          break;
+     case 'E':
+          DEFAULT(csi->arguments[0], 1);
+          terminal_move_cursor_to(terminal, 0, terminal->cursor.y + csi->arguments[0]);
+          break;
+     case 'F':
+          DEFAULT(csi->arguments[0], 1);
+          terminal_move_cursor_to(terminal, 0, terminal->cursor.y - csi->arguments[0]);
+          break;
+     case 'g':
+          switch(csi->arguments[0]){
+          default:
+               break;
+          case 0: // clear tab stop
+               terminal->tabs[terminal->cursor.x] = 0;
+               break;
+          case 3: // clear all tabs
+               memset(terminal->tabs, 0, terminal->columns * sizeof(*terminal->tabs));
+               break;
+          }
+          break;
+     case 'G':
+     case '`':
+          DEFAULT(csi->arguments[0], 1);
+          terminal_move_cursor_to(terminal, csi->arguments[0] - 1, terminal->cursor.y);
+          break;
+     case 'H':
+     case 'f':
+          DEFAULT(csi->arguments[0], 1);
+          DEFAULT(csi->arguments[1], 1);
+          terminal_move_cursor_to(terminal, csi->arguments[1] - 1, csi->arguments[0] - 1);
+          break;
+     case 'I':
+          // TODO
+          break;
+     case 'J': // clear region in relation to cursor
+          switch(csi->arguments[0]){
+          default:
+               break;
+          case 0: // below
+               terminal_clear_region(terminal, terminal->cursor.x, terminal->cursor.y, terminal->columns - 1, terminal->cursor.y);
+               if(terminal->cursor.y < (terminal->rows - 1)){
+                    terminal_clear_region(terminal, 0, terminal->cursor.y + 1, terminal->columns - 1, terminal->rows - 1);
+               }
+               break;
+          case 1: // above
+               if(terminal->cursor.y > 1){
+                    terminal_clear_region(terminal, 0, 0, terminal->columns - 1, terminal->cursor.y - 1);
+               }
+               terminal_clear_region(terminal, 0, terminal->cursor.y, terminal->cursor.x, terminal->cursor.y);
+               break;
+          case 2: // all
+               terminal_clear_region(terminal, 0, 0, terminal->columns - 1, terminal->rows - 1);
+               break;
+          }
+          break;
+     case 'K': // clear line
+          switch(csi->arguments[0]){
+          default:
+               break;
+          case 0: // right of cursor
+               terminal_clear_region(terminal, terminal->cursor.x, terminal->cursor.y, terminal->columns - 1, terminal->cursor.y);
+               break;
+          case 1: // left of cursor
+               terminal_clear_region(terminal, 0, terminal->cursor.y, terminal->cursor.x, terminal->cursor.y);
+               break;
+          case 2: // all
+               terminal_clear_region(terminal, 0, terminal->cursor.y, terminal->columns - 1, terminal->cursor.y);
+               break;
+          }
+          break;
+     case 'S':
+          DEFAULT(csi->arguments[0], 1);
+          terminal_scroll_up(terminal, terminal->top, csi->arguments[0]);
+          break;
+     case 'T':
+          DEFAULT(csi->arguments[0], 1);
+          terminal_scroll_down(terminal, terminal->top, csi->arguments[0]);
+          break;
+     case 'L':
+          DEFAULT(csi->arguments[0], 1);
+          terminal_insert_blank_line(terminal, csi->arguments[0]);
+          break;
+     case 'l':
+          // TODO: set mode
+          break;
+     case 'M':
+          DEFAULT(csi->arguments[0], 1);
+          terminal_delete_line(terminal, csi->arguments[0]);
+          break;
+     case 'X':
+          DEFAULT(csi->arguments[0], 1);
+          terminal_clear_region(terminal, terminal->cursor.x, terminal->cursor.y, terminal->cursor.x + csi->arguments[0] - 1, terminal->cursor.y);
+          break;
+     case 'P':
+          DEFAULT(csi->arguments[0], 1);
+          break;
+     case 'Z':
+          break;
+     case 'd':
+          break;
+     case 'h':
+          break;
+     case 'm':
+          break;
+     case 'n':
+          break;
+     case 'r':
+          break;
+     case 's':
+          break;
+     case 'u':
+          break;
+     case ' ':
+          break;
+     }
+}
+
+
 void terminal_put(Terminal_t* terminal, Rune_t rune)
 {
      if(is_controller(rune)){
@@ -611,7 +728,7 @@ void terminal_put(Terminal_t* terminal, Rune_t rune)
                if(BETWEEN(rune, 0x40, 0x7E) || csi->buffer_length >= (ESCAPE_BUFFER_SIZE - 1)){
                     terminal->escape_state = 0;
                     csi_parse(csi);
-                    csi_handle(csi);
+                    csi_handle(terminal);
                }
 
                return;
