@@ -21,7 +21,8 @@
 
 #define LOGFILE_NAME "cursed.log"
 #define DEFAULT_SHELL "/bin/bash"
-//NOTE: used for testing #define TERM_NAME "dumb"
+//NOTE: used for testing
+//#define TERM_NAME "dumb"
 #define TERM_NAME "xterm"
 #define UTF8_SIZE 4
 #define ESCAPE_BUFFER_SIZE (128 * UTF8_SIZE)
@@ -29,6 +30,7 @@
 // NOTE: 60 fps limit
 #define DRAW_USEC_LIMIT 16666
 #define VT_IDENTIFIER "\033[?6c"
+#define TAB_SPACES 5
 
 #define LOG(...) fprintf(g_log, __VA_ARGS__);
 #define ELEM_COUNT(static_array) (sizeof(static_array) / sizeof(static_array[0]))
@@ -451,6 +453,34 @@ void terminal_swap_screen(Terminal_t* terminal)
      terminal_all_dirty(terminal);
 }
 
+void terminal_reset(Terminal_t* terminal)
+{
+     terminal->cursor.attributes.attributes = GLYPH_ATTRIBUTE_NONE;
+     terminal->cursor.attributes.foreground = 0;
+     terminal->cursor.attributes.background = 0;
+     terminal->cursor.x = 0;
+     terminal->cursor.y = 0;
+     terminal->cursor.state = CURSOR_STATE_DEFAULT;
+
+     memset(terminal->tabs, 0, terminal->columns * sizeof(*terminal->tabs));
+     for(int i = TAB_SPACES; i < terminal->columns; ++i) terminal->tabs[i] = 1;
+     terminal->top = 0;
+     terminal->bottom = terminal->rows - 1;
+     terminal->mode = TERMINAL_MODE_WRAP | TERMINAL_MODE_UTF8;
+     //TODO: clear character translation table
+     terminal->charset = 0;
+
+     terminal_move_cursor_to(terminal, 0, 0);
+     terminal_cursor_save(terminal);
+     terminal_clear_region(terminal, 0, 0, terminal->columns - 1, terminal->rows - 1);
+     terminal_swap_screen(terminal);
+
+     terminal_move_cursor_to(terminal, 0, 0);
+     terminal_cursor_save(terminal);
+     terminal_clear_region(terminal, 0, 0, terminal->columns - 1, terminal->rows - 1);
+     terminal_swap_screen(terminal);
+}
+
 void terminal_control_code(Terminal_t* terminal, Rune_t rune)
 {
      assert(is_controller(rune));
@@ -725,8 +755,7 @@ bool esc_handle(Terminal_t* terminal, Rune_t rune)
           tty_write(terminal->file_descriptor, VT_IDENTIFIER, sizeof(VT_IDENTIFIER) - 1);
           break;
      case 'c': /* RIS -- Reset to inital state */
-          // TODO
-          //treset();
+          terminal_reset(terminal);
           //resettitle();
           //xloadcols();
           break;
@@ -759,6 +788,7 @@ bool esc_handle(Terminal_t* terminal, Rune_t rune)
 void csi_handle(Terminal_t* terminal)
 {
      CSIEscape_t* csi = &terminal->csi_escape;
+     LOG("csi '%c'\n", csi->mode[0]);
 
 	switch (csi->mode[0]) {
 	default:
@@ -1169,7 +1199,6 @@ int main(int argc, char** argv)
      }
 
      Terminal_t terminal = {};
-     //CSIEscape_t csi_escape = {};
      //STREscape_t str_escape = {};
      int tty_file_descriptor;
      pid_t tty_pid;
@@ -1191,9 +1220,11 @@ int main(int argc, char** argv)
                terminal.alternate_lines[r] = calloc(terminal.columns, sizeof(*terminal.alternate_lines[r]));
           }
 
+          terminal.tabs = calloc(terminal.columns, sizeof(*terminal.tabs));
+
           terminal.dirty_lines = calloc(terminal.rows, sizeof(*terminal.dirty_lines));
-          terminal_all_dirty(&terminal);
-          terminal_clear_region(&terminal, 0, 0, terminal.columns, terminal.rows);
+
+          terminal_reset(&terminal);
      }
 
      WINDOW* view = NULL;
