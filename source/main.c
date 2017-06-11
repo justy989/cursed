@@ -109,8 +109,8 @@ typedef enum{
 typedef struct{
      Rune_t   rune;
      uint16_t attributes;
-     uint32_t foreground;
-     uint32_t background;
+     int32_t foreground;
+     int32_t background;
 }Glyph_t;
 
 typedef struct{
@@ -466,8 +466,8 @@ void terminal_swap_screen(Terminal_t* terminal)
 void terminal_reset(Terminal_t* terminal)
 {
      terminal->cursor.attributes.attributes = GLYPH_ATTRIBUTE_NONE;
-     terminal->cursor.attributes.foreground = 0;
-     terminal->cursor.attributes.background = 0;
+     terminal->cursor.attributes.foreground = -1;
+     terminal->cursor.attributes.background = -1;
      terminal->cursor.x = 0;
      terminal->cursor.y = 0;
      terminal->cursor.state = CURSOR_STATE_DEFAULT;
@@ -718,15 +718,6 @@ void terminal_set_attributes(Terminal_t* terminal)
      for(int i = 0; i < csi->argument_count; ++i){
           switch(csi->arguments[i]){
           default:
-               if(BETWEEN(csi->arguments[i], 30, 37)){
-                    terminal->cursor.attributes.foreground = csi->arguments[i] - 30;
-               }else if(BETWEEN(csi->arguments[i], 40, 47)){
-                    terminal->cursor.attributes.background = csi->arguments[i] - 40;
-               }else if(BETWEEN(csi->arguments[i], 90, 97)){
-                    terminal->cursor.attributes.foreground = csi->arguments[i] - 90 - 8;
-               }else if(BETWEEN(csi->arguments[i], 100, 107)){
-                    terminal->cursor.attributes.background = csi->arguments[i] - 100 + 8;
-               }
                break;
           case 0:
                terminal->cursor.attributes.attributes &= ~(GLYPH_ATTRIBUTE_BOLD | GLYPH_ATTRIBUTE_FAINT |
@@ -785,10 +776,58 @@ void terminal_set_attributes(Terminal_t* terminal)
           case 29:
                terminal->cursor.attributes.attributes &= ~GLYPH_ATTRIBUTE_STRUCK;
                break;
+          case 30:
+               terminal->cursor.attributes.foreground = COLOR_BLACK;
+               break;
+          case 31:
+               terminal->cursor.attributes.foreground = COLOR_RED;
+               break;
+          case 32:
+               terminal->cursor.attributes.foreground = COLOR_GREEN;
+               break;
+          case 33:
+               terminal->cursor.attributes.foreground = COLOR_YELLOW;
+               break;
+          case 34:
+               terminal->cursor.attributes.foreground = COLOR_BLUE;
+               break;
+          case 35:
+               terminal->cursor.attributes.foreground = COLOR_MAGENTA;
+               break;
+          case 36:
+               terminal->cursor.attributes.foreground = COLOR_CYAN;
+               break;
+          case 37:
+               terminal->cursor.attributes.foreground = COLOR_WHITE;
+               break;
           case 38: // TODO: reserved fg color
                break;
           case 39:
-               terminal->cursor.attributes.foreground = -1;
+               terminal->cursor.attributes.background = -1;
+               break;
+          case 40:
+               terminal->cursor.attributes.background = COLOR_BLACK;
+               break;
+          case 41:
+               terminal->cursor.attributes.background = COLOR_RED;
+               break;
+          case 42:
+               terminal->cursor.attributes.background = COLOR_GREEN;
+               break;
+          case 43:
+               terminal->cursor.attributes.background = COLOR_YELLOW;
+               break;
+          case 44:
+               terminal->cursor.attributes.background = COLOR_BLUE;
+               break;
+          case 45:
+               terminal->cursor.attributes.background = COLOR_MAGENTA;
+               break;
+          case 46:
+               terminal->cursor.attributes.background = COLOR_CYAN;
+               break;
+          case 47:
+               terminal->cursor.attributes.background = COLOR_WHITE;
                break;
           case 48: // TODO: reserved bg color
                break;
@@ -1435,6 +1474,12 @@ int main(int argc, char** argv)
           terminal.lines = calloc(terminal.rows, sizeof(*terminal.lines));
           for(int r = 0; r < terminal.rows; ++r){
                terminal.lines[r] = calloc(terminal.columns, sizeof(*terminal.lines[r]));
+
+               // default fg and bg
+               for(int g = 0; g < terminal.columns; ++g){
+                    terminal.lines[r][g].foreground = -1;
+                    terminal.lines[r][g].background = -1;
+               }
           }
 
           terminal.alternate_lines = calloc(terminal.rows, sizeof(*terminal.alternate_lines));
@@ -1515,6 +1560,9 @@ int main(int argc, char** argv)
      struct timeval previous_draw_time;
      struct timeval current_draw_time;
      uint64_t elapsed = 0;
+     uint32_t color_pair = 0;
+     int32_t last_color_foreground = -1;
+     int32_t last_color_background = -1;
 
      // main program loop
      while(!g_quit){
@@ -1531,7 +1579,27 @@ int main(int argc, char** argv)
           for(int r = 0; r < terminal.rows; ++r){
                if(terminal.dirty_lines[r]){
                     for(int c = 0; c < terminal.columns; ++c){
-                         mvwaddch(view, r + 1, c + 1, terminal.lines[r][c].rune);
+                         Glyph_t* glyph = terminal.lines[r] + c;
+
+                         if(last_color_foreground != glyph->foreground || last_color_background != glyph->background){
+                              wstandend(view);
+
+                              if(glyph->foreground == -1 && glyph->background == -1){
+                                   // pass
+                              }else{
+                                   color_pair++;
+                                   color_pair %= COLOR_PAIRS;
+                                   init_pair(color_pair, glyph->foreground, glyph->background);
+
+                                   wattron(view, COLOR_PAIR(color_pair));
+                              }
+
+                              last_color_foreground = glyph->foreground;
+                              last_color_background = glyph->background;
+                         }
+
+                         mvwaddch(view, r + 1, c + 1, glyph->rune);
+
                     }
 
                     terminal.dirty_lines[r] = false;
