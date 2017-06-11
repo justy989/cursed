@@ -289,6 +289,8 @@ void terminal_clear_region(Terminal_t* terminal, int left, int top, int right, i
      CLAMP(bottom, 0, terminal->rows - 1);
 
      for(int y = top; y <= bottom; ++y){
+          terminal->dirty_lines[y] = true;
+
           for(int x = left; x <= right; ++x){
                Glyph_t* glyph = terminal->lines[y] + x;
                glyph->foreground = terminal->cursor.attributes.foreground;
@@ -316,25 +318,6 @@ void terminal_all_dirty(Terminal_t* terminal)
      terminal_set_dirt(terminal, 0, terminal->rows - 1);
 }
 
-void terminal_scroll_up(Terminal_t* terminal, int original, int n)
-{
-     Glyph_t* temp_line = NULL;
-
-     CLAMP(n, 0, terminal->bottom - original + 1);
-
-     // clear the original line plus the scroll
-     terminal_clear_region(terminal, 0, original, terminal->columns - 1, original + n - 1);
-     terminal_set_dirt(terminal, original, terminal->bottom);
-
-     // swap lines to move them all up
-     // the cleared lines will end up at the bottom
-     for(int i = original; i <= terminal->bottom - n; ++i){
-          temp_line = terminal->lines[i];
-          terminal->lines[i] = terminal->lines[i + n];
-          terminal->lines[i + n] = temp_line;
-     }
-}
-
 void terminal_scroll_down(Terminal_t* terminal, int original, int n)
 {
 	Glyph_t* temp_line;
@@ -349,6 +332,25 @@ void terminal_scroll_down(Terminal_t* terminal, int original, int n)
 		terminal->lines[i] = terminal->lines[i - n];
           terminal->lines[i - n] = temp_line;
 	}
+}
+
+void terminal_scroll_up(Terminal_t* terminal, int original, int n)
+{
+     Glyph_t* temp_line = NULL;
+
+     CLAMP(n, 0, terminal->bottom - original + 1);
+
+     // clear the original line plus the scroll
+     terminal_clear_region(terminal, 0, original, terminal->columns - 1, original + n - 1);
+     terminal_set_dirt(terminal, original + n, terminal->bottom);
+
+     // swap lines to move them all up
+     // the cleared lines will end up at the bottom
+     for(int i = original; i <= terminal->bottom - n; ++i){
+          temp_line = terminal->lines[i];
+          terminal->lines[i] = terminal->lines[i + n];
+          terminal->lines[i + n] = temp_line;
+     }
 }
 
 void terminal_set_scroll(Terminal_t* terminal, int top, int bottom)
@@ -1616,6 +1618,7 @@ int main(int argc, char** argv)
                          (current_draw_time.tv_usec - previous_draw_time.tv_usec);
           }while(elapsed < DRAW_USEC_LIMIT);
 
+          wstandend(view);
           box(view, 0, 0);
 
           for(int r = 0; r < terminal.rows; ++r){
