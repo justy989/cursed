@@ -32,6 +32,17 @@
 #define VT_IDENTIFIER "\033[?6c"
 #define TAB_SPACES 5
 
+#define COLOR_BACKGROUND -1
+#define COLOR_FOREGROUND -1
+#define COLOR_BRIGHT_BLACK 8
+#define COLOR_BRIGHT_RED 9
+#define COLOR_BRIGHT_GREEN 10
+#define COLOR_BRIGHT_YELLOW 11
+#define COLOR_BRIGHT_BLUE 12
+#define COLOR_BRIGHT_MAGENTA 13
+#define COLOR_BRIGHT_CYAN 14
+#define COLOR_BRIGHT_WHITE 15
+
 #define LOG(...) fprintf(g_log, __VA_ARGS__);
 #define ELEM_COUNT(static_array) (sizeof(static_array) / sizeof(static_array[0]))
 #define CLAMP(a, min, max) (a = (a < min) ? min : (a > max) ? max : a);
@@ -477,8 +488,8 @@ void terminal_swap_screen(Terminal_t* terminal)
 void terminal_reset(Terminal_t* terminal)
 {
      terminal->cursor.attributes.attributes = GLYPH_ATTRIBUTE_NONE;
-     terminal->cursor.attributes.foreground = -1;
-     terminal->cursor.attributes.background = -1;
+     terminal->cursor.attributes.foreground = COLOR_FOREGROUND;
+     terminal->cursor.attributes.background = COLOR_BACKGROUND;
      terminal->cursor.x = 0;
      terminal->cursor.y = 0;
      terminal->cursor.state = CURSOR_STATE_DEFAULT;
@@ -737,8 +748,8 @@ void terminal_set_attributes(Terminal_t* terminal)
                                                            GLYPH_ATTRIBUTE_ITALIC | GLYPH_ATTRIBUTE_UNDERLINE |
                                                            GLYPH_ATTRIBUTE_BLINK | GLYPH_ATTRIBUTE_REVERSE |
                                                            GLYPH_ATTRIBUTE_INVISIBLE | GLYPH_ATTRIBUTE_STRUCK);
-               terminal->cursor.attributes.foreground = -1;
-               terminal->cursor.attributes.background = -1;
+               terminal->cursor.attributes.foreground = COLOR_FOREGROUND;
+               terminal->cursor.attributes.background = COLOR_BACKGROUND;
                break;
           case 1:
                terminal->cursor.attributes.attributes |= GLYPH_ATTRIBUTE_BOLD;
@@ -816,7 +827,7 @@ void terminal_set_attributes(Terminal_t* terminal)
           case 38: // TODO: reserved fg color
                break;
           case 39:
-               terminal->cursor.attributes.background = -1;
+               terminal->cursor.attributes.foreground = COLOR_FOREGROUND;
                break;
           case 40:
                terminal->cursor.attributes.background = COLOR_BLACK;
@@ -845,7 +856,55 @@ void terminal_set_attributes(Terminal_t* terminal)
           case 48: // TODO: reserved bg color
                break;
           case 49:
-               terminal->cursor.attributes.background = -1;
+               terminal->cursor.attributes.background = COLOR_BACKGROUND;
+               break;
+          case 90:
+               terminal->cursor.attributes.foreground = COLOR_BRIGHT_BLACK;
+               break;
+          case 91:
+               terminal->cursor.attributes.foreground = COLOR_BRIGHT_RED;
+               break;
+          case 92:
+               terminal->cursor.attributes.foreground = COLOR_BRIGHT_GREEN;
+               break;
+          case 93:
+               terminal->cursor.attributes.foreground = COLOR_BRIGHT_YELLOW;
+               break;
+          case 94:
+               terminal->cursor.attributes.foreground = COLOR_BRIGHT_BLUE;
+               break;
+          case 95:
+               terminal->cursor.attributes.foreground = COLOR_BRIGHT_MAGENTA;
+               break;
+          case 96:
+               terminal->cursor.attributes.foreground = COLOR_BRIGHT_CYAN;
+               break;
+          case 97:
+               terminal->cursor.attributes.foreground = COLOR_BRIGHT_WHITE;
+               break;
+          case 100:
+               terminal->cursor.attributes.background = COLOR_BRIGHT_BLACK;
+               break;
+          case 101:
+               terminal->cursor.attributes.background = COLOR_BRIGHT_RED;
+               break;
+          case 102:
+               terminal->cursor.attributes.background = COLOR_BRIGHT_GREEN;
+               break;
+          case 103:
+               terminal->cursor.attributes.background = COLOR_BRIGHT_YELLOW;
+               break;
+          case 104:
+               terminal->cursor.attributes.background = COLOR_BRIGHT_BLUE;
+               break;
+          case 105:
+               terminal->cursor.attributes.background = COLOR_BRIGHT_MAGENTA;
+               break;
+          case 106:
+               terminal->cursor.attributes.background = COLOR_BRIGHT_CYAN;
+               break;
+          case 107:
+               terminal->cursor.attributes.background = COLOR_BRIGHT_WHITE;
                break;
           }
      }
@@ -1214,11 +1273,6 @@ void str_handle(Terminal_t* terminal)
 
 void terminal_put(Terminal_t* terminal, Rune_t rune)
 {
-     if(is_controller(rune)){
-          terminal_control_code(terminal, rune);
-          return;
-     }
-
      if(terminal->escape_state & ESCAPE_STATE_STR){
           if(rune == '\a' || rune == 030 || rune == 032 || rune == 033 || is_controller_c1(rune)){
                terminal->escape_state &= ~(ESCAPE_STATE_START | ESCAPE_STATE_STR | ESCAPE_STATE_DCS);
@@ -1241,12 +1295,15 @@ void terminal_put(Terminal_t* terminal, Rune_t rune)
                     return;
                }
 
-               char c = rune;
-
-               memmove(terminal->str_escape.buffer + terminal->str_escape.buffer_length, &c, 1);
-               terminal->str_escape.buffer_length += 1;
+               terminal->str_escape.buffer[terminal->str_escape.buffer_length] = rune;
+               terminal->str_escape.buffer_length++;
                return;
           }
+     }
+
+     if(is_controller(rune)){
+          terminal_control_code(terminal, rune);
+          return;
      }
 
      if(terminal->escape_state & ESCAPE_STATE_START){
