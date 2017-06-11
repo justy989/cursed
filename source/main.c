@@ -169,6 +169,7 @@ Cursor_t g_cursor[2];
 
 bool tty_write(int file_descriptor, const char* string, size_t len);
 void str_handle(Terminal_t* terminal);
+void str_sequence(Terminal_t* terminal, Rune_t rune);
 
 bool is_controller_c0(Rune_t rune)
 {
@@ -270,9 +271,17 @@ void terminal_set_glyph(Terminal_t* terminal, Rune_t rune, Glyph_t* attributes, 
 void terminal_clear_region(Terminal_t* terminal, int left, int top, int right, int bottom)
 {
      // probably going to assert since we are going to trust external data
-     // TODO: just swap if they are wrong?
-     assert(left <= right);
-     assert(top <= bottom);
+     if(left > right){
+          int tmp = left;
+          left = right;
+          right = tmp;
+     }
+
+     if(top > bottom){
+          int tmp = top;
+          top = bottom;
+          bottom = tmp;
+     }
 
      CLAMP(left, 0, terminal->columns - 1);
      CLAMP(right, 0, terminal->columns - 1);
@@ -477,8 +486,10 @@ void terminal_reset(Terminal_t* terminal)
      terminal->top = 0;
      terminal->bottom = terminal->rows - 1;
      terminal->mode = TERMINAL_MODE_WRAP | TERMINAL_MODE_UTF8;
+
      //TODO: clear character translation table
      terminal->charset = 0;
+     terminal->escape_state = 0;
 
      terminal_move_cursor_to(terminal, 0, 0);
      terminal_cursor_save(terminal);
@@ -497,6 +508,7 @@ void terminal_control_code(Terminal_t* terminal, Rune_t rune)
 
      switch(rune){
      default:
+          LOG("unhandled control code: '%c'\n", rune);
           break;
      case '\t': // HT
           terminal_put_tab(terminal, 1);
@@ -580,8 +592,7 @@ void terminal_control_code(Terminal_t* terminal, Rune_t rune)
 	case 0x9d: // OSC
 	case 0x9e: // PM
 	case 0x9f: // APC
-          // TODO
-		//tstrsequence(ascii);
+          str_sequence(terminal, rune);
 		return;
      }
 
@@ -855,8 +866,7 @@ bool esc_handle(Terminal_t* terminal, Rune_t rune)
      case '^': // PM -- Privacy Message
      case ']': // OSC -- Operating System Command
      case 'k': // old title set compatibility
-          // TODO
-          //tstrsequence(ascii);
+          str_sequence(terminal, rune);
           return false;
      case 'n': // LS2 -- Locking shift 2
      case 'o': // LS3 -- Locking shift 3
@@ -915,7 +925,7 @@ bool esc_handle(Terminal_t* terminal, Rune_t rune)
           if(terminal->escape_state & ESCAPE_STATE_STR_END) str_handle(terminal);
           break;
      default:
-          LOG("erresc: unknown sequence ESC 0x%02X '%c'\n", (unsigned char)rune, isprint(rune) ? rune : '.');
+          LOG("erresc: unknown sequence ESC 0x%02X '%c' in sequence: '%s'\n", (unsigned char)rune, isprint(rune) ? rune : '.', terminal->csi_escape.buffer);
           break;
      }
 
@@ -926,8 +936,9 @@ void csi_handle(Terminal_t* terminal)
 {
      CSIEscape_t* csi = &terminal->csi_escape;
 
-	switch (csi->mode[0]) {
+	switch(csi->mode[0]){
 	default:
+          LOG("unhandled csi: '%c' in sequence: '%s'\n", csi->mode[0], csi->buffer);
           break;
      case '@':
           DEFAULT(csi->arguments[0], 1);
@@ -1134,6 +1145,32 @@ void str_parse(Terminal_t* terminal)
      }
 }
 
+void str_sequence(Terminal_t* terminal, Rune_t rune)
+{
+     memset(&terminal->str_escape, 0, sizeof(terminal->str_escape));
+
+     switch(rune){
+     default:
+          break;
+     case 0x90:
+          rune = 'P';
+          terminal->escape_state |= ESCAPE_STATE_DCS;
+          break;
+     case 0x9f:
+          rune = '_';
+          break;
+     case 0x9e:
+          rune = '^';
+          break;
+     case 0x9d:
+          rune = ']';
+          break;
+     }
+
+     terminal->str_escape.type = rune;
+     terminal->escape_state |= ESCAPE_STATE_STR;
+}
+
 void str_handle(Terminal_t* terminal)
 {
      STREscape_t* str = &terminal->str_escape;
@@ -1187,6 +1224,7 @@ void terminal_put(Terminal_t* terminal, Rune_t rune)
                     CHANGE_BIT(terminal->mode, 0, TERMINAL_MODE_SIXEL);
                     return;
                }
+
                terminal->escape_state |= ESCAPE_STATE_STR_END;
           }else{
                if(terminal->mode & TERMINAL_MODE_SIXEL){
@@ -1250,7 +1288,7 @@ void terminal_put(Terminal_t* terminal, Rune_t rune)
 
      if(terminal->cursor.x + width > terminal->columns){
           terminal_put_newline(terminal, true);
-          current_glyph = terminal->lines[terminal->cursor.y] + terminal->cursor.x;
+          //current_glyph = terminal->lines[terminal->cursor.y] + terminal->cursor.x;
      }
 
      terminal_set_glyph(terminal, rune, &terminal->cursor.attributes, terminal->cursor.x, terminal->cursor.y);
@@ -1379,6 +1417,8 @@ void* tty_reader(void* data)
 {
      TTYThreadData_t* thread_data = (TTYThreadData_t*)(data);
 
+     FILE* dump = fopen("dump.bin", "wb");
+
      char buffer[BUFSIZ];
      int buffer_length = 0;
 
@@ -1395,6 +1435,8 @@ void* tty_reader(void* data)
           for(int i = 0; i < buffer_length; ++i){
                terminal_put(thread_data->terminal, buffer[i]);
           }
+
+          fwrite(buffer, buffer_length, 1, dump);
 
           sleep(0);
      }
