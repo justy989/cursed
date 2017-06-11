@@ -133,7 +133,7 @@ typedef struct{
      char type;
      char buffer[ESCAPE_BUFFER_SIZE];
      uint32_t buffer_length;
-     int arguments[ESCAPE_ARGUMENT_SIZE];
+     char* arguments[ESCAPE_ARGUMENT_SIZE];
      uint32_t argument_count;
 }STREscape_t;
 
@@ -155,15 +155,12 @@ typedef struct{
      bool           numlock;
      int32_t*       tabs;
      CSIEscape_t    csi_escape;
+     STREscape_t    str_escape;
 }Terminal_t;
 
 typedef struct{
      Terminal_t* terminal;
-}TTYReadData_t;
-
-typedef struct{
-     int file_descriptor;
-}TTYWriteData_t;
+}TTYThreadData_t;
 
 FILE* g_log = NULL;
 bool g_quit = false;
@@ -171,18 +168,30 @@ bool g_quit = false;
 Cursor_t g_cursor[2];
 
 bool tty_write(int file_descriptor, const char* string, size_t len);
+void str_handle(Terminal_t* terminal);
 
-bool is_controller(Rune_t rune)
+bool is_controller_c0(Rune_t rune)
 {
-     // c0? idk what these mean
      if(BETWEEN(rune, 0, 0x1f) || rune == '\177'){
           return true;
      }
 
-     // c1? idk what these mean
+     return false;
+}
+
+bool is_controller_c1(Rune_t rune)
+{
      if(BETWEEN(rune, 0x80, 0x9f)){
           return true;
      }
+
+     return false;
+}
+
+bool is_controller(Rune_t rune)
+{
+     if(is_controller_c0(rune)) return true;
+     if(is_controller_c1(rune)) return true;
 
      return false;
 }
@@ -335,7 +344,6 @@ void terminal_scroll_down(Terminal_t* terminal, int original, int n)
 
 void terminal_set_scroll(Terminal_t* terminal, int top, int bottom)
 {
-
      CLAMP(top, 0, terminal->rows - 1);
      CLAMP(bottom, 0, terminal->rows - 1);
 
@@ -505,6 +513,9 @@ void terminal_control_code(Terminal_t* terminal, Rune_t rune)
           terminal_put_newline(terminal, terminal->mode & TERMINAL_MODE_CRLF);
           return;
      case '\a': // BEL
+          if(terminal->escape_state & ESCAPE_STATE_STR_END){
+               str_handle(terminal);
+          }
           break;
      case '\033': // ESC
           csi_reset(&terminal->csi_escape);
@@ -700,84 +711,169 @@ void terminal_set_mode(Terminal_t* terminal, bool set)
      }
 }
 
+void terminal_set_attributes(Terminal_t* terminal)
+{
+     CSIEscape_t* csi = &terminal->csi_escape;
+
+     for(int i = 0; i < csi->argument_count; ++i){
+          switch(csi->arguments[i]){
+          default:
+               if(BETWEEN(csi->arguments[i], 30, 37)){
+                    terminal->cursor.attributes.foreground = csi->arguments[i] - 30;
+               }else if(BETWEEN(csi->arguments[i], 40, 47)){
+                    terminal->cursor.attributes.background = csi->arguments[i] - 40;
+               }else if(BETWEEN(csi->arguments[i], 90, 97)){
+                    terminal->cursor.attributes.foreground = csi->arguments[i] - 90 - 8;
+               }else if(BETWEEN(csi->arguments[i], 100, 107)){
+                    terminal->cursor.attributes.background = csi->arguments[i] - 100 + 8;
+               }
+               break;
+          case 0:
+               terminal->cursor.attributes.attributes &= ~(GLYPH_ATTRIBUTE_BOLD | GLYPH_ATTRIBUTE_FAINT |
+                                                           GLYPH_ATTRIBUTE_ITALIC | GLYPH_ATTRIBUTE_UNDERLINE |
+                                                           GLYPH_ATTRIBUTE_BLINK | GLYPH_ATTRIBUTE_REVERSE |
+                                                           GLYPH_ATTRIBUTE_INVISIBLE | GLYPH_ATTRIBUTE_STRUCK);
+               terminal->cursor.attributes.foreground = -1;
+               terminal->cursor.attributes.background = -1;
+               break;
+          case 1:
+               terminal->cursor.attributes.attributes |= GLYPH_ATTRIBUTE_BOLD;
+               break;
+          case 2:
+               terminal->cursor.attributes.attributes |= GLYPH_ATTRIBUTE_FAINT;
+               break;
+          case 3:
+               terminal->cursor.attributes.attributes |= GLYPH_ATTRIBUTE_ITALIC;
+               break;
+          case 4:
+               terminal->cursor.attributes.attributes |= GLYPH_ATTRIBUTE_UNDERLINE;
+               break;
+          case 5: // fallthrough
+          case 6:
+               terminal->cursor.attributes.attributes |= GLYPH_ATTRIBUTE_BLINK;
+               break;
+          case 7:
+               terminal->cursor.attributes.attributes |= GLYPH_ATTRIBUTE_REVERSE;
+               break;
+          case 8:
+               terminal->cursor.attributes.attributes |= GLYPH_ATTRIBUTE_INVISIBLE;
+               break;
+          case 9:
+               terminal->cursor.attributes.attributes |= GLYPH_ATTRIBUTE_STRUCK;
+               break;
+          case 21:
+               terminal->cursor.attributes.attributes &= ~GLYPH_ATTRIBUTE_BOLD;
+               break;
+          case 22:
+               terminal->cursor.attributes.attributes &= ~(GLYPH_ATTRIBUTE_BOLD | GLYPH_ATTRIBUTE_FAINT);
+               break;
+          case 23:
+               terminal->cursor.attributes.attributes &= ~GLYPH_ATTRIBUTE_ITALIC;
+               break;
+          case 24:
+               terminal->cursor.attributes.attributes &= ~GLYPH_ATTRIBUTE_UNDERLINE;
+               break;
+          case 25:
+               terminal->cursor.attributes.attributes &= ~GLYPH_ATTRIBUTE_BLINK;
+               break;
+          case 27:
+               terminal->cursor.attributes.attributes &= ~GLYPH_ATTRIBUTE_REVERSE;
+               break;
+          case 28:
+               terminal->cursor.attributes.attributes &= ~GLYPH_ATTRIBUTE_INVISIBLE;
+               break;
+          case 29:
+               terminal->cursor.attributes.attributes &= ~GLYPH_ATTRIBUTE_STRUCK;
+               break;
+          case 38: // TODO: reserved fg color
+               break;
+          case 39:
+               terminal->cursor.attributes.foreground = -1;
+               break;
+          case 48: // TODO: reserved bg color
+               break;
+          case 49:
+               terminal->cursor.attributes.background = -1;
+               break;
+          }
+     }
+}
+
 bool esc_handle(Terminal_t* terminal, Rune_t rune)
 {
      switch(rune) {
      case '[':
           terminal->escape_state |= ESCAPE_STATE_CSI;
-          return 0;
+          return false;
      case '#':
           terminal->escape_state |= ESCAPE_STATE_TEST;
-          return 0;
+          return false;
      case '%':
           terminal->escape_state |= ESCAPE_STATE_UTF8;
-          return 0;
-     case 'P': /* DCS -- Device Control String */
-     case '_': /* APC -- Application Program Command */
-     case '^': /* PM -- Privacy Message */
-     case ']': /* OSC -- Operating System Command */
-     case 'k': /* old title set compatibility */
+          return false;
+     case 'P': // DCS -- Device Control String
+     case '_': // APC -- Application Program Command
+     case '^': // PM -- Privacy Message
+     case ']': // OSC -- Operating System Command
+     case 'k': // old title set compatibility
           // TODO
           //tstrsequence(ascii);
-          return 0;
-     case 'n': /* LS2 -- Locking shift 2 */
-     case 'o': /* LS3 -- Locking shift 3 */
+          return false;
+     case 'n': // LS2 -- Locking shift 2
+     case 'o': // LS3 -- Locking shift 3
           // TODO
           //term.charset = 2 + (ascii - 'n');
           break;
-     case '(': /* GZD4 -- set primary charset G0 */
-     case ')': /* G1D4 -- set secondary charset G1 */
-     case '*': /* G2D4 -- set tertiary charset G2 */
-     case '+': /* G3D4 -- set quaternary charset G3 */
+     case '(': // GZD4 -- set primary charset G0
+     case ')': // G1D4 -- set secondary charset G1
+     case '*': // G2D4 -- set tertiary charset G2
+     case '+': // G3D4 -- set quaternary charset G3
           // TODO
           //term.icharset = ascii - '(';
           //term.esc |= ESC_ALTCHARSET;
-          return 0;
-     case 'D': /* IND -- Linefeed */
-          if (terminal->cursor.y == terminal->bottom) {
+          return false;
+     case 'D': // IND -- Linefeed
+          if(terminal->cursor.y == terminal->bottom){
                terminal_scroll_up(terminal, terminal->top, 1);
-          } else {
+          }else{
                terminal_move_cursor_to(terminal, terminal->cursor.x, terminal->cursor.y + 1);
           }
           break;
-     case 'E': /* NEL -- Next line */
-          terminal_put_newline(terminal, 1); /* always go to first col */
+     case 'E': // NEL -- Next line
+          terminal_put_newline(terminal, 1); // always go to first col
           break;
-     case 'H': /* HTS -- Horizontal tab stop */
+     case 'H': // HTS -- Horizontal tab stop
           terminal->tabs[terminal->cursor.x] = 1;
           break;
-     case 'M': /* RI -- Reverse index */
-          if (terminal->cursor.y == terminal->top) {
+     case 'M': // RI -- Reverse index
+          if(terminal->cursor.y == terminal->top){
                terminal_scroll_down(terminal, terminal->top, 1);
-          } else {
+          }else{
                terminal_move_cursor_to(terminal, terminal->cursor.x, terminal->cursor.y - 1);
           }
           break;
-     case 'Z': /* DECID -- Identify Terminal */
+     case 'Z': // DECID -- Identify Terminal
           tty_write(terminal->file_descriptor, VT_IDENTIFIER, sizeof(VT_IDENTIFIER) - 1);
           break;
-     case 'c': /* RIS -- Reset to inital state */
+     case 'c': // RIS -- Reset to inital state
           terminal_reset(terminal);
           //resettitle();
           //xloadcols();
           break;
-     case '=': /* DECPAM -- Application keypad */
+     case '=': // DECPAM -- Application keypad
           terminal->mode |= TERMINAL_MODE_APPKEYPAD;
           break;
-     case '>': /* DECPNM -- Normal keypad */
+     case '>': // DECPNM -- Normal keypad
           terminal->mode &= ~TERMINAL_MODE_APPKEYPAD;
           break;
-     case '7': /* DECSC -- Save Cursor */
-          // TODO:
-          //tcursor(CURSOR_SAVE);
+     case '7': // DECSC -- Save Cursor
+          terminal_cursor_save(terminal);
           break;
-     case '8': /* DECRC -- Restore Cursor */
-          // TODO:
-          //tcursor(CURSOR_LOAD);
+     case '8': // DECRC -- Restore Cursor
+          terminal_cursor_load(terminal);
           break;
-     case '\\': /* ST -- String Terminator */
-          // TODO:
-          //if(terminal->escape_mode & ESCAPE_STATE_STR_END) strhandle();
+     case '\\': // ST -- String Terminator
+          if(terminal->escape_state & ESCAPE_STATE_STR_END) str_handle(terminal);
           break;
      default:
           LOG("erresc: unknown sequence ESC 0x%02X '%c'\n", (unsigned char)rune, isprint(rune) ? rune : '.');
@@ -795,7 +891,8 @@ void csi_handle(Terminal_t* terminal)
 	default:
           break;
      case '@':
-          // TODO
+          DEFAULT(csi->arguments[0], 1);
+          terminal_insert_blank(terminal, csi->arguments[0]);
           break;
      case 'A':
           DEFAULT(csi->arguments[0], 1);
@@ -824,7 +921,7 @@ void csi_handle(Terminal_t* terminal)
           }
           break;
      case 'c':
-          // TODO
+		if (csi->arguments[0] == 0) tty_write(terminal->file_descriptor, VT_IDENTIFIER, sizeof(VT_IDENTIFIER) - 1);
           break;
      case 'C':
      case 'a':
@@ -919,7 +1016,7 @@ void csi_handle(Terminal_t* terminal)
           terminal_insert_blank_line(terminal, csi->arguments[0]);
           break;
      case 'l':
-          // TODO: set mode
+          terminal_set_mode(terminal, false);
           break;
      case 'M':
           DEFAULT(csi->arguments[0], 1);
@@ -942,10 +1039,10 @@ void csi_handle(Terminal_t* terminal)
           terminal_move_cursor_to_absolute(terminal, terminal->cursor.x, csi->arguments[0] - 1);
           break;
      case 'h':
-          // TODO
+          terminal_set_mode(terminal, true);
           break;
      case 'm':
-          // TODO
+          terminal_set_attributes(terminal);
           break;
      case 'n':
           if(csi->arguments[0] == 6){
@@ -969,11 +1066,73 @@ void csi_handle(Terminal_t* terminal)
      case 'u':
           terminal_cursor_load(terminal);
           break;
-     case ' ':
+     case ' ': // cursor style
           break;
      }
 }
 
+void str_parse(Terminal_t* terminal)
+{
+     STREscape_t* str = &terminal->str_escape;
+     int c;
+     char *p = str->buffer;
+
+     str->argument_count = 0;
+     str->buffer[str->buffer_length] = 0;
+
+     if(*p == 0) return;
+
+     while(str->argument_count < ESCAPE_ARGUMENT_SIZE){
+          str->arguments[str->argument_count] = p;
+          str->argument_count++;
+
+          while((c = *p) != ';' && c != 0){
+               ++p;
+          }
+
+          if(c == 0) return;
+          *p++ = 0;
+     }
+}
+
+void str_handle(Terminal_t* terminal)
+{
+     STREscape_t* str = &terminal->str_escape;
+
+     terminal->escape_state &= ~(ESCAPE_STATE_STR_END | ESCAPE_STATE_STR);
+     str_parse(terminal);
+     int argument_count = str->argument_count;
+     int param = argument_count ? atoi(str->arguments[0]) : 0;
+
+     switch(str->type){
+     default:
+          break;
+     case ']':
+          switch(param){
+          default:
+               break;
+          case 0:
+          case 1:
+          case 2:
+               break;
+          case 52:
+               break;
+          case 4:
+          case 104:
+               break;
+          }
+          break;
+     case 'k':
+          break;
+     case 'P':
+          terminal->mode |= ESCAPE_STATE_DCS;
+          break;
+     case '_':
+          break;
+     case '^':
+          break;
+     }
+}
 
 void terminal_put(Terminal_t* terminal, Rune_t rune)
 {
@@ -983,7 +1142,32 @@ void terminal_put(Terminal_t* terminal, Rune_t rune)
      }
 
      if(terminal->escape_state & ESCAPE_STATE_STR){
-          return;
+          if(rune == '\a' || rune == 030 || rune == 032 || rune == 033 || is_controller_c1(rune)){
+               terminal->escape_state &= ~(ESCAPE_STATE_START | ESCAPE_STATE_STR | ESCAPE_STATE_DCS);
+               if(terminal->mode & TERMINAL_MODE_SIXEL){
+                    CHANGE_BIT(terminal->mode, 0, TERMINAL_MODE_SIXEL);
+                    return;
+               }
+               terminal->escape_state |= ESCAPE_STATE_STR_END;
+          }else{
+               if(terminal->mode & TERMINAL_MODE_SIXEL){
+                    return;
+               }
+
+               if(terminal->escape_state & ESCAPE_STATE_DCS && terminal->str_escape.buffer_length == 0 && rune == 'q'){
+                    terminal->mode |= TERMINAL_MODE_SIXEL;
+               }
+
+               if(terminal->str_escape.buffer_length + 1 >= (ESCAPE_BUFFER_SIZE - 1)){
+                    return;
+               }
+
+               char c = rune;
+
+               memmove(terminal->str_escape.buffer + terminal->str_escape.buffer_length, &c, 1);
+               terminal->str_escape.buffer_length += 1;
+               return;
+          }
      }
 
      if(terminal->escape_state & ESCAPE_STATE_START){
@@ -1013,14 +1197,46 @@ void terminal_put(Terminal_t* terminal, Rune_t rune)
           return;
      }
 
+     Glyph_t* current_glyph = terminal->lines[terminal->cursor.y] + terminal->cursor.x;
+     if(terminal->mode & TERMINAL_MODE_WRAP && terminal->cursor.state & CURSOR_STATE_WRAPNEXT){
+          current_glyph->attributes |= GLYPH_ATTRIBUTE_WRAP;
+          terminal_put_newline(terminal, true);
+          current_glyph = terminal->lines[terminal->cursor.y] + terminal->cursor.x;
+     }
+
+     int width = 1;
+     if(terminal->mode & TERMINAL_MODE_INSERT && terminal->cursor.x + width < terminal->columns){
+          memmove(current_glyph + width, current_glyph, (terminal->columns - terminal->cursor.x - width) * sizeof(*current_glyph));
+     }
+
+     if(terminal->cursor.x + width > terminal->columns){
+          terminal_put_newline(terminal, true);
+          current_glyph = terminal->lines[terminal->cursor.y] + terminal->cursor.x;
+     }
+
      terminal_set_glyph(terminal, rune, &terminal->cursor.attributes, terminal->cursor.x, terminal->cursor.y);
 
-     int new_cursor = terminal->cursor.x + 1;
-     if(new_cursor >= terminal->columns){
-          terminal_put_newline(terminal, true);
+     if(terminal->cursor.x + width < terminal->columns){
+          terminal_move_cursor_to(terminal, terminal->cursor.x + width, terminal->cursor.y);
      }else{
-          terminal_move_cursor_to(terminal, new_cursor, terminal->cursor.y);
+          terminal->cursor.state |= CURSOR_STATE_WRAPNEXT;
      }
+}
+
+void terminal_echo(Terminal_t* terminal, Rune_t rune)
+{
+     if(is_controller(rune)){
+          if(rune & 0x80){
+               rune &= 0x7f;
+               terminal_put(terminal, '^');
+               terminal_put(terminal, '[');
+          }else if(rune != '\n' && rune != '\r' && rune != '\t'){
+               rune ^= 0x40;
+               terminal_put(terminal, '^');
+          }
+     }
+
+     terminal_put(terminal, rune);
 }
 
 void handle_signal_child(int signal)
@@ -1122,7 +1338,7 @@ bool tty_write(int file_descriptor, const char* string, size_t len)
 
 void* tty_reader(void* data)
 {
-     TTYReadData_t* thread_data = (TTYReadData_t*)(data);
+     TTYThreadData_t* thread_data = (TTYThreadData_t*)(data);
 
      char buffer[BUFSIZ];
      int buffer_length = 0;
@@ -1147,7 +1363,7 @@ void* tty_reader(void* data)
 
 void* tty_write_keys(void* data)
 {
-     TTYWriteData_t* thread_data = (TTYWriteData_t*)(data);
+     TTYThreadData_t* thread_data = (TTYThreadData_t*)(data);
      int rc, key;
      char character = 0;
      char* string = NULL;
@@ -1176,10 +1392,16 @@ void* tty_write_keys(void* data)
                break;
           }
 
-          rc = write(thread_data->file_descriptor, string, len);
+          rc = write(thread_data->terminal->file_descriptor, string, len);
           if(rc < 0){
                printf("%s() write() to terminal failed: %s", __FUNCTION__, strerror(errno));
                return NULL;
+          }
+
+          if(thread_data->terminal->mode & TERMINAL_MODE_ECHO){
+               for(int i = 0; i < len; i++){
+                    terminal_echo(thread_data->terminal, string[i]);
+               }
           }
 
           if(free_string) free(string);
@@ -1200,7 +1422,6 @@ int main(int argc, char** argv)
      }
 
      Terminal_t terminal = {};
-     //STREscape_t str_escape = {};
      int tty_file_descriptor;
      pid_t tty_pid;
 
@@ -1267,7 +1488,7 @@ int main(int argc, char** argv)
 
           terminal.file_descriptor = tty_file_descriptor;
 
-          TTYReadData_t* data = calloc(1, sizeof(*data));
+          TTYThreadData_t* data = calloc(1, sizeof(*data));
           data->terminal = &terminal;
 
           int rc = pthread_create(&tty_read_thread, NULL, tty_reader, data);
@@ -1279,8 +1500,8 @@ int main(int argc, char** argv)
 
      // setup getch thread
      {
-          TTYWriteData_t* data = calloc(1, sizeof(*data));
-          data->file_descriptor = tty_file_descriptor;
+          TTYThreadData_t* data = calloc(1, sizeof(*data));
+          data->terminal = &terminal;
           int rc = pthread_create(&tty_write_thread, NULL, tty_write_keys, data);
           if(rc != 0){
                LOG("pthread_create() failed: '%s'\n", strerror(errno));
@@ -1323,6 +1544,8 @@ int main(int argc, char** argv)
 
      pthread_cancel(tty_read_thread);
      pthread_join(tty_read_thread, NULL);
+     pthread_cancel(tty_write_thread);
+     pthread_join(tty_write_thread, NULL);
 
      // cleanup curses
      delwin(view);
