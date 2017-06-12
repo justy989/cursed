@@ -173,6 +173,16 @@ typedef struct{
      Terminal_t* terminal;
 }TTYThreadData_t;
 
+typedef struct{
+     int32_t foreground;
+     int32_t background;
+}ColorPair_t;
+
+typedef struct{
+     int32_t count;
+     ColorPair_t pairs[256]; // NOTE: this is what COLOR_PAIRS was for me (which is for some reason not const?)
+}ColorDefs_t;
+
 FILE* g_log = NULL;
 bool g_quit = false;
 
@@ -1476,8 +1486,6 @@ void* tty_reader(void* data)
 {
      TTYThreadData_t* thread_data = (TTYThreadData_t*)(data);
 
-     FILE* dump = fopen("dump.bin", "wb");
-
      char buffer[BUFSIZ];
      int buffer_length = 0;
 
@@ -1494,8 +1502,6 @@ void* tty_reader(void* data)
           for(int i = 0; i < buffer_length; ++i){
                terminal_put(thread_data->terminal, buffer[i]);
           }
-
-          fwrite(buffer, buffer_length, 1, dump);
 
           sleep(0);
      }
@@ -1515,10 +1521,20 @@ void* tty_write_keys(void* data)
           string = keybound(key, 0);
 
           if(!string){
-               character = key;
                free_string = false;
-               string = (char*)(&character);
                len = 1;
+
+               switch(key){
+               default:
+                    character = key;
+                    break;
+               // damnit curses
+               case 10:
+                    character = 13;
+                    break;
+               }
+
+               string = (char*)(&character);
           }else{
                free_string = true;
                len = strlen(string);
@@ -1589,9 +1605,7 @@ int main(int argc, char** argv)
           }
 
           terminal.tabs = calloc(terminal.columns, sizeof(*terminal.tabs));
-
           terminal.dirty_lines = calloc(terminal.rows, sizeof(*terminal.dirty_lines));
-
           terminal_reset(&terminal);
      }
 
@@ -1622,6 +1636,9 @@ int main(int argc, char** argv)
 
           view = newwin(view_height, view_width, view_y, view_x);
      }
+
+     ColorDefs_t color_defs;
+     color_defs.count = 0;
 
      pthread_t tty_read_thread;
      pthread_t tty_write_thread;
@@ -1661,7 +1678,7 @@ int main(int argc, char** argv)
      struct timeval previous_draw_time;
      struct timeval current_draw_time;
      uint64_t elapsed = 0;
-     uint32_t color_pair = 0;
+     int32_t color_pair = 0;
      int32_t last_color_foreground = -1;
      int32_t last_color_background = -1;
 
@@ -1686,14 +1703,41 @@ int main(int argc, char** argv)
                          if(last_color_foreground != glyph->foreground || last_color_background != glyph->background){
                               wstandend(view);
 
-                              if(glyph->foreground == -1 && glyph->background == -1){
-                                   // pass
+                              if(glyph->foreground == COLOR_FOREGROUND && glyph->background == COLOR_BACKGROUND){
+                                   // no need to create a new color pair for the default
                               }else{
-                                   color_pair++;
-                                   color_pair %= COLOR_PAIRS;
-                                   init_pair(color_pair, glyph->foreground, glyph->background);
+                                   // does the new glyph match an existing definition?
+                                   int32_t matched_pair = -1;
+                                   for(int32_t i = 0; i < color_defs.count; ++i){
+                                        if(glyph->foreground == color_defs.pairs[i].foreground &&
+                                           glyph->background == color_defs.pairs[i].background){
+                                             matched_pair = i;
+                                             break;
+                                        }
+                                   }
 
-                                   wattron(view, COLOR_PAIR(color_pair));
+                                   // if so use that color pair
+                                   if(matched_pair >= 0){
+                                        wattron(view, COLOR_PAIR(matched_pair));
+                                   }else{
+                                        // increment the color pair we are going to define, but make sure it wraps around to 0 at the max
+                                        color_pair++;
+                                        color_pair %= COLOR_PAIRS;
+                                        if(color_pair == 0) color_pair++; // when we wrap around, start at 1, because curses doesn't like 0 index color pairs
+
+                                        // create the pair definition
+                                        init_pair(color_pair, glyph->foreground, glyph->background);
+
+                                        // set our internal definition
+                                        color_defs.pairs[color_pair].foreground = glyph->foreground;
+                                        color_defs.pairs[color_pair].background = glyph->background;
+
+                                        // override the count if we haven't wrapped around
+                                        int32_t new_count = color_pair;
+                                        if(new_count > color_defs.count) color_defs.count = new_count;
+
+                                        wattron(view, COLOR_PAIR(color_pair));
+                                   }
                               }
 
                               last_color_foreground = glyph->foreground;
@@ -1701,7 +1745,6 @@ int main(int argc, char** argv)
                          }
 
                          mvwaddch(view, r + 1, c + 1, glyph->rune);
-
                     }
 
                     terminal.dirty_lines[r] = false;
