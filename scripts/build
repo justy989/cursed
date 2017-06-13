@@ -1,6 +1,6 @@
 #!/bin/bash
 set -x
 CFLAGS='-Wall -Werror -Wshadow -std=gnu99 -ggdb3'
-LDFLAGS='-lncurses -lpthread -lutil'
+LDFLAGS='-lncursesw -lpthread -lutil'
 mkdir -p build
 gcc $CFLAGS source/main.c -o build/cursed $LDFLAGS

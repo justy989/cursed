@@ -7,6 +7,7 @@
 #include <assert.h>
 #include <limits.h>
 #include <unistd.h>
+#include <locale.h>
 #include <ctype.h>
 #include <pthread.h>
 #include <signal.h>
@@ -191,6 +192,8 @@ Cursor_t g_cursor[2];
 bool tty_write(int file_descriptor, const char* string, size_t len);
 void str_handle(Terminal_t* terminal);
 void str_sequence(Terminal_t* terminal, Rune_t rune);
+bool utf8_decode(const char* buffer, size_t buffer_len, size_t* len, Rune_t* u);
+bool utf8_encode(Rune_t u, char* buffer, size_t buffer_len, int* len);
 
 bool is_controller_c0(Rune_t rune)
 {
@@ -1283,6 +1286,17 @@ void str_handle(Terminal_t* terminal)
 
 void terminal_put(Terminal_t* terminal, Rune_t rune)
 {
+     char characters[UTF8_SIZE];
+     int width = 1;
+     int len = 0;
+
+     if(terminal->mode & TERMINAL_MODE_UTF8){
+          utf8_encode(rune, characters, UTF8_SIZE, &len);
+     }else{
+          characters[0] = rune;
+          width = 1;
+     }
+
      if(terminal->escape_state & ESCAPE_STATE_STR){
           if(rune == '\a' || rune == 030 || rune == 032 || rune == 033 || is_controller_c1(rune)){
                terminal->escape_state &= ~(ESCAPE_STATE_START | ESCAPE_STATE_STR | ESCAPE_STATE_DCS);
@@ -1330,7 +1344,11 @@ void terminal_put(Terminal_t* terminal, Rune_t rune)
 
                return;
           }else if(terminal->escape_state & ESCAPE_STATE_UTF8){
-               // TODO
+               if(rune == 'G'){
+                    terminal->mode |= TERMINAL_MODE_UTF8;
+               }else if(rune == '@'){
+                    terminal->mode &= ~TERMINAL_MODE_UTF8;
+               }
           }else if(terminal->escape_state & ESCAPE_STATE_ALTCHARSET){
                // TODO
           }else if(terminal->escape_state & ESCAPE_STATE_TEST){
@@ -1350,14 +1368,12 @@ void terminal_put(Terminal_t* terminal, Rune_t rune)
           current_glyph = terminal->lines[terminal->cursor.y] + terminal->cursor.x;
      }
 
-     int width = 1;
      if(terminal->mode & TERMINAL_MODE_INSERT && terminal->cursor.x + width < terminal->columns){
           memmove(current_glyph + width, current_glyph, (terminal->columns - terminal->cursor.x - width) * sizeof(*current_glyph));
      }
 
      if(terminal->cursor.x + width > terminal->columns){
           terminal_put_newline(terminal, true);
-          //current_glyph = terminal->lines[terminal->cursor.y] + terminal->cursor.x;
      }
 
      terminal_set_glyph(terminal, rune, &terminal->cursor.attributes, terminal->cursor.x, terminal->cursor.y);
@@ -1488,6 +1504,8 @@ void* tty_reader(void* data)
 
      char buffer[BUFSIZ];
      int buffer_length = 0;
+     Rune_t decoded;
+     size_t decoded_length;
 
      while(true){
           int rc = read(thread_data->terminal->file_descriptor, buffer, ELEM_COUNT(buffer));
@@ -1500,7 +1518,10 @@ void* tty_reader(void* data)
           buffer_length = rc;
 
           for(int i = 0; i < buffer_length; ++i){
-               terminal_put(thread_data->terminal, buffer[i]);
+               if(utf8_decode(buffer + i, buffer_length, &decoded_length, &decoded)){
+                    terminal_put(thread_data->terminal, decoded);
+                    i += (decoded_length - 1);
+               }
           }
 
           sleep(0);
@@ -1566,8 +1587,110 @@ void* tty_write_keys(void* data)
      return NULL;
 }
 
+bool utf8_decode(const char* buffer, size_t buffer_len, size_t* len, Rune_t* u)
+{
+     if(buffer_len < 1) return false;
+
+     // 0xxxxxxx is just ascii
+     if((buffer[0] & 0x80) == 0){
+          *len = 1;
+          *u = buffer[0];
+     // 110xxxxx is a 2 byte utf8 string
+     }else if((char)(buffer[0] & ~0x1F) == (char)(0xC0)){
+          if(buffer_len < 2) return false;
+
+          *len = 2;
+          *u = buffer[0] & 0x1F;
+          *u <<= 6;
+          *u |= buffer[1] & 0x3F;
+     // 1110xxxx is a 3 byte utf8 string
+     }else if((char)(buffer[0] & ~0x0F) == (char)(0xE0)){
+          if(buffer_len < 3) return false;
+
+          *len = 3;
+          *u = buffer[0] & 0x0F;
+          *u <<= 6;
+          *u |= buffer[1] & 0x3F;
+          *u <<= 6;
+          *u |= buffer[2] & 0x3F;
+     // 11110xxx is a 4 byte utf8 string
+     }else if((char)(buffer[0] & ~0x07) == (char)(0xF0)){
+          if(buffer_len < 4) return false;
+
+          *len = 4;
+          *u = buffer[0] & 0x0F;
+          *u <<= 6;
+          *u |= buffer[1] & 0x3F;
+          *u <<= 6;
+          *u |= buffer[2] & 0x3F;
+          *u <<= 6;
+          *u |= buffer[3] & 0x3F;
+     }else{
+          return false;
+     }
+
+     return true;
+}
+
+bool utf8_encode(Rune_t u, char* buffer, size_t buffer_len, int* len)
+{
+     if(u < 0x80){
+          if(buffer_len < 1) return false;
+          *len = 1;
+
+          // leave as-is
+          buffer[0] = u;
+     }else if(u < 0x0800){
+          if(buffer_len < 2) return false;
+          *len = 2;
+
+          // u = 00000000 00000000 00000abc defghijk
+
+          // 2 bytes
+          // first byte:  110abcde
+          buffer[0] = 0xC0 | ((u >> 6) & 0x1f);
+
+          // second byte: 10fghijk
+          buffer[1] = 0x80 | (u & 0x3f);
+     }else if(u < 0x10000){
+          if(buffer_len < 3) return false;
+          *len = 3;
+
+          // u = 00000000 00000000 abcdefgh ijklmnop
+
+          // 3 bytes
+          // first byte:  1110abcd
+          buffer[0] = 0xE0 | ((u >> 12) & 0x0F);
+
+          // second byte: 10efghij
+          buffer[1] = 0x80 | ((u >> 6) & 0x3F);
+
+          // third byte:  10klmnop
+          buffer[2] = 0x80 | (u & 0x3F);
+     }else if(u < 0x110000){
+          if(buffer_len < 4) return false;
+          *len = 4;
+
+          // u = 00000000 000abcde fghijklm nopqrstu
+
+          // 4 bytes
+          // first byte:  11110abc
+          buffer[0] = 0xF0 | ((u >> 18) & 0x07);
+          // second byte: 10defghi
+          buffer[1] = 0x80 | ((u >> 12) & 0x3F);
+          // third byte:  10jklmno
+          buffer[2] = 0x80 | ((u >> 6) & 0x3F);
+          // fourth byte: 10pqrstu
+          buffer[3] = 0x80 | (u & 0x3F);
+     }
+
+     return true;
+}
+
 int main(int argc, char** argv)
 {
+     setlocale(LC_ALL, "");
+
      // setup log
      {
           g_log = fopen(LOGFILE_NAME, "w");
@@ -1744,7 +1867,15 @@ int main(int argc, char** argv)
                               last_color_background = glyph->background;
                          }
 
-                         mvwaddch(view, r + 1, c + 1, glyph->rune);
+                         if(glyph->rune < 0x80){
+                              mvwaddch(view, r + 1, c + 1, glyph->rune);
+                         }else{
+                              char utf8_string[UTF8_SIZE];
+                              int len;
+                              utf8_encode(glyph->rune, utf8_string, UTF8_SIZE, &len);
+                              utf8_string[len] = 0;
+                              mvwaddstr(view, r + 1, c + 1, utf8_string);
+                         }
                     }
 
                     terminal.dirty_lines[r] = false;
